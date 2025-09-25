@@ -22,8 +22,14 @@ begin
     padw mem_loadw.INPUTS_START
     # => [INTENT_UUID, price, amount]
 
+    push.777000 debug.stack drop
+
     call.book::insert_offer
+
+    push.777001 debug.stack drop
 
     exec.sys::truncate_stack
     # => []
+
+    push.777002 debug.stack drop
 end
