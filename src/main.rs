@@ -1,9 +1,11 @@
 use miden_lib::account::auth::{AuthRpoFalcon512, NoAuth};
-use rand::{prelude::StdRng, Rng, RngCore, SeedableRng};
+use rand::{Rng, RngCore, SeedableRng, prelude::StdRng};
 use std::{fs, path::Path, sync::Arc};
 
 mod helper;
 use helper::EDFI_BANNER;
+mod notes;
+use notes::Side;
 
 use miden_assembly::{
     LibraryPath,
@@ -12,8 +14,8 @@ use miden_assembly::{
 use miden_client::{
     Client, ClientError, Felt, ScriptBuilder,
     account::{
-        Account, AccountBuilder, AccountIdAddress, AccountStorageMode, AccountType,
-        Address, AddressInterface, StorageSlot, component::BasicWallet, StorageMap,
+        Account, AccountBuilder, AccountIdAddress, AccountStorageMode, AccountType, Address,
+        AddressInterface, StorageMap, StorageSlot, component::BasicWallet,
     },
     auth::AuthSecretKey,
     auth::TransactionAuthenticator,
@@ -21,12 +23,13 @@ use miden_client::{
     crypto::SecretKey,
     keystore::FilesystemKeyStore,
     note::{
-        Note, NoteAssets, NoteExecutionHint, NoteExecutionMode, NoteInputs, NoteMetadata,
-        NoteRecipient, NoteTag, NoteType,
+        Note, NoteAssets, NoteExecutionHint, NoteInputs, NoteMetadata, NoteRecipient, NoteTag,
+        NoteType,
     },
     rpc::{Endpoint, TonicRpcClient},
     transaction::{OutputNote, TransactionKernel, TransactionRequestBuilder},
 };
+use miden_lib::utils::Serializable;
 use miden_objects::{
     Word,
     account::{AccountComponent, NetworkId},
@@ -57,6 +60,7 @@ async fn consume_note<AUTH: TransactionAuthenticator + Sync + 'static>(
     // let secret = Word::from([3u8, 3, 3, 3]);
     let consume_custom_request = TransactionRequestBuilder::new()
         .unauthenticated_input_notes([(note.clone(), None)])
+        //.authenticated_input_notes([(note.id(), None)])
         .build()
         .unwrap();
     let tx_result = client
@@ -82,14 +86,19 @@ async fn create_note<AUTH: TransactionAuthenticator + Sync + 'static>(
     let code = fs::read_to_string(Path::new("./masm/notes/limit_buy_request.masm")).unwrap();
     let book_code = fs::read_to_string(Path::new("./masm/accounts/book.masm")).unwrap();
     let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
-    let book_component_lib = create_library(assembler, "external_contract::book", &book_code).unwrap();
-    let note_script = ScriptBuilder::new(true).with_dynamically_linked_library(&book_component_lib).unwrap().compile_note_script(code).unwrap();
+    let book_component_lib =
+        create_library(assembler, "external_contract::book", &book_code).unwrap();
+    let note_script = ScriptBuilder::new(true)
+        .with_dynamically_linked_library(&book_component_lib)
+        .unwrap()
+        .compile_note_script(code)
+        .unwrap();
 
     let secret = Word::from([3u8, 3, 3, 3]);
-    
+
     // Generate random amount between 10 and 100
     let amount: u64 = offer_rng.random_range(10..=100);
-    
+
     // Generate random price between 99000 and 150000
     let price: u64 = offer_rng.random_range(99000..=150000);
 
@@ -98,13 +107,21 @@ async fn create_note<AUTH: TransactionAuthenticator + Sync + 'static>(
     let uuid: u128 = uuid_rng.random();
     let uuid_high = (uuid >> 64) as u64;
     let uuid_low = uuid as u64;
-    let inputs = vec![Felt::new(uuid_high), Felt::new(uuid_low), Felt::new(0), Felt::new(0), Felt::new(amount), Felt::new(price)];
+    let inputs = vec![
+        Felt::new(uuid_high),
+        Felt::new(uuid_low),
+        Felt::new(0),
+        Felt::new(0),
+        Felt::new(amount),
+        Felt::new(price),
+    ];
     let note_inputs = NoteInputs::new(inputs)?;
     let recipient = NoteRecipient::new(secret, note_script, note_inputs);
-    let tag = NoteTag::for_public_use_case(0, 0, NoteExecutionMode::Local).unwrap();
+    //let tag = NoteTag::for_public_use_case(0, 0, NoteExecutionMode::Local).unwrap();
+    let tag = NoteTag::for_local_use_case(0, 0).unwrap();
     let metadata = NoteMetadata::new(
         account.id(),
-        NoteType::Public,
+        NoteType::Private,
         tag,
         NoteExecutionHint::always(),
         Felt::new(0),
@@ -152,7 +169,6 @@ async fn create_basic_account(
 async fn deploy_book_account<AUTH: TransactionAuthenticator>(
     client: &mut Client<AUTH>,
 ) -> Result<Account, ClientError> {
-
     // Prepare assembler (debug mode = true)
     let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
 
@@ -164,13 +180,10 @@ async fn deploy_book_account<AUTH: TransactionAuthenticator>(
     let counter_component = AccountComponent::compile(
         book_code.clone(),
         assembler,
-        vec![StorageSlot::Value(
-            [Felt::new(0), Felt::new(0), Felt::new(0), Felt::new(0)].into(),
-        ), 
-        StorageSlot::Map(StorageMap::new()),
-        StorageSlot::Value(
-            [Felt::new(0), Felt::new(0), Felt::new(0), Felt::new(0)].into(),
-        ),
+        vec![
+            StorageSlot::Value([Felt::new(0), Felt::new(0), Felt::new(0), Felt::new(0)].into()),
+            StorageSlot::Map(StorageMap::new()),
+            StorageSlot::Value([Felt::new(0), Felt::new(0), Felt::new(0), Felt::new(0)].into()),
         ],
     )
     .unwrap()
@@ -195,11 +208,114 @@ async fn deploy_book_account<AUTH: TransactionAuthenticator>(
     Ok(book_contract)
 }
 
+// fn check_order_book(book: &StorageMap, head: &Word, buy: bool) -> Result<(), String> {
+//     let mut last_id = &Word::default();
+//     let mut current_id = head;
+//     let mut stop = false;
+//     while !stop {
+//         let entry = book.get(&current_id);
+//         let [previous, next, amount,price] = entry.as_elements();
+//         println!("{:?}", entry);
+//     }
+//     Ok(())
+// }
+
+fn check_order_book(book: &StorageMap, head: &Word, side: Side) -> Result<(), String> {
+    // Head format is [id, 0, 0, 0], and map keys are also [id, 0, 0, 0]
+    let mut current_id = head.clone();
+    let mut last_price: Option<u64> = None;
+    let mut visited = std::collections::HashSet::new();
+
+    // Empty list is valid
+    if current_id.as_elements()[0] == Felt::new(0) {
+        return Ok(());
+    }
+
+    loop {
+        // Check for cycles
+        if visited.contains(&current_id) {
+            return Err(format!("Cycle detected at entry {:?}", current_id));
+        }
+        visited.insert(current_id.clone());
+
+        // Get the current entry
+        // Entry format (actual storage): [amount, price, next_id, previous_id]
+        // Note: The MASM comments say [previous_id, next_id, price, amount] but the actual
+        // stack order when set_map_item is called results in reversed order
+        let entry = book.get(&current_id);
+        let elements = entry.as_elements();
+        let _amount = elements[0].as_int();
+        let price = elements[1].as_int();
+        let next_id = elements[2];
+        let _previous_id = elements[3];
+
+        // Construct next as a Word (key format is [id, 0, 0, 0])
+        let next = Word::from([next_id, Felt::new(0), Felt::new(0), Felt::new(0)]);
+
+        // Check price ordering
+        if let Some(prev_price) = last_price {
+            if side == Side::BUY {
+                // For buy orders, prices should be descending (higher prices first)
+                if price > prev_price {
+                    return Err(format!(
+                        "Price ordering violation: {} > {} (expected descending for buy orders)",
+                        price, prev_price
+                    ));
+                }
+            } else {
+                // For sell orders, prices should be ascending (lower prices first)
+                if price < prev_price {
+                    return Err(format!(
+                        "Price ordering violation: {} < {} (expected ascending for sell orders)",
+                        price, prev_price
+                    ));
+                }
+            }
+        }
+        last_price = Some(price);
+
+        // Check if we've reached the end
+        if next == Word::default() {
+            break;
+        }
+
+        // Verify backward link consistency
+        let next_entry = book.get(&next);
+        let next_elements = next_entry.as_elements();
+        let next_previous_id = next_elements[3]; // previous_id is at index 3
+
+        // Extract the ID from current_id (key format is [id, 0, 0, 0])
+        let current_id_felt = current_id.as_elements()[0];
+
+        if next_previous_id != current_id_felt {
+            return Err(format!(
+                "Index inconsistency: entry {:?} points to {:?} as next, but {:?} points to {:?} as previous",
+                current_id_felt, next_id, next_id, next_previous_id
+            ));
+        }
+
+        current_id = next;
+    }
+
+    // Check that we visited all entries in the map
+    let total_entries = book.entries().count();
+    let visited_count = visited.len();
+    if visited_count != total_entries {
+        return Err(format!(
+            "Incomplete traversal: visited {} entries but map contains {} entries. Some entries may be unreachable from head.",
+            visited_count, total_entries
+        ));
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ClientError> {
     println!("{}", EDFI_BANNER);
     // Initialize client
-    let endpoint = Endpoint::testnet();
+    // let endpoint = Endpoint::testnet();
+    let endpoint = Endpoint::localhost();
     println!("Using endpoint: {}", endpoint);
     let timeout_ms = 10_000;
     let rpc_api = Arc::new(TonicRpcClient::new(&endpoint, timeout_ms));
@@ -227,14 +343,16 @@ async fn main() -> Result<(), ClientError> {
 
     let desk_account_address = Address::from(AccountIdAddress::new(
         desk_account.id(),
-        AddressInterface::Unspecified
-    )).to_bech32(NetworkId::Testnet);
+        AddressInterface::Unspecified,
+    ))
+    .to_bech32(NetworkId::Testnet);
 
     let client_account_address = Address::from(AccountIdAddress::new(
         client_account.id(),
-        AddressInterface::Unspecified
-    )).to_bech32(NetworkId::Testnet);
-    
+        AddressInterface::Unspecified,
+    ))
+    .to_bech32(NetworkId::Testnet);
+
     println!("client_account: {}", client_account_address);
     println!("desk_account: {}", desk_account_address);
 
@@ -246,8 +364,20 @@ async fn main() -> Result<(), ClientError> {
 
     for i in 1..=1000 {
         println!("\n=== Iteration {} ===", i);
-        
-        let note = create_note(&mut client, &mut offer_rng, &mut uuid_rng,&client_account, &desk_account).await?;
+
+        let note = create_note(
+            &mut client,
+            &mut offer_rng,
+            &mut uuid_rng,
+            &client_account,
+            &desk_account,
+        )
+        .await?;
+        // let mut buffer = Vec::new();
+        // note.write_into(&mut buffer);
+        // let note_string = hex::encode(&buffer);
+        // println!("{}", note_string);
+
         let sync_summary = client.sync_state().await.unwrap();
         println!("Latest block: {}", sync_summary.block_num);
 
@@ -255,16 +385,20 @@ async fn main() -> Result<(), ClientError> {
         let sync_summary = client.sync_state().await.unwrap();
         println!("Latest block: {}", sync_summary.block_num);
 
-
         let account_record = client.try_get_account(desk_account.id()).await?;
-        let StorageSlot::Map(book) = &account_record.account().storage().slots()[1] else { todo!() };
-        let StorageSlot::Value(head) = &account_record.account().storage().slots()[2] else { todo!() };
+        let StorageSlot::Map(book) = &account_record.account().storage().slots()[1] else {
+            todo!()
+        };
+        let StorageSlot::Value(head) = &account_record.account().storage().slots()[2] else {
+            todo!()
+        };
         println!("<<< Book");
         println!("Head: {}", head.as_elements()[0].as_int());
         for entry in book.entries().into_iter() {
             println!("{:?}", entry)
         }
         println!(">>> Book");
+        check_order_book(&book, &head, Side::SELL).unwrap();
     }
 
     Ok(())
