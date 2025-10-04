@@ -5,7 +5,7 @@ use std::{fs, path::Path, sync::Arc};
 mod helper;
 use helper::EDFI_BANNER;
 mod notes;
-use notes::Side;
+use notes::{Side, play};
 
 use miden_assembly::{
     LibraryPath,
@@ -313,10 +313,11 @@ fn check_order_book(book: &StorageMap, head: &Word, side: Side) -> Result<(), St
 #[tokio::main]
 async fn main() -> Result<(), ClientError> {
     println!("{}", EDFI_BANNER);
+    play();
     // Initialize client
     // let endpoint = Endpoint::testnet();
     let endpoint = Endpoint::localhost();
-    println!("Using endpoint: {}", endpoint);
+    // println!("Using endpoint: {}", endpoint);
     let timeout_ms = 10_000;
     let rpc_api = Arc::new(TonicRpcClient::new(&endpoint, timeout_ms));
     let keystore = FilesystemKeyStore::new("./keystore".into()).unwrap().into();
@@ -372,7 +373,7 @@ async fn main() -> Result<(), ClientError> {
             &client_account,
             &desk_account,
         )
-        .await?;
+        .await.unwrap();
         // let mut buffer = Vec::new();
         // note.write_into(&mut buffer);
         // let note_string = hex::encode(&buffer);
